@@ -1,0 +1,21 @@
+[project]
+name = "dojo"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "flax>=0.12.5",
+    "jax[cuda13]>=0.9.1",
+    "mujoco>=3.5.0",
+    "mujoco-mjx>=3.5.0",
+    "mujoco-warp",
+]
+
+[tool.uv.sources]
+mujoco-warp = { git = "https://github.com/google-deepmind/mujoco_warp.git" }
+
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

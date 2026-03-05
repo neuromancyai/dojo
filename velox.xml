@@ -1,0 +1,293 @@
+<!--
+  Velox — a lightweight quadruped designed from scratch.
+
+  Design philosophy
+  ─────────────────
+  • 3-DOF per leg (abduction + hip flexion + knee), 12 actuators total
+  • Pure MuJoCo primitives — no external mesh files required
+  • Position-controlled, suitable for RL training
+  • Visual/collision geoms are shared (primitives look good enough)
+  • Foot spheres get high-priority, condim=6 contact for stable locomotion
+
+  Physical summary
+  ────────────────
+  Total mass  ≈ 12.5 kg
+  Body        0.38 × 0.14 × 0.07 m  (6.0 kg)
+  Hip links   4 × 0.50 kg
+  Thighs      4 × 0.95 kg,  length 0.21 m
+  Calves      4 × 0.28 kg,  length 0.19 m
+  Foot radius 0.022 m
+
+  Standing geometry (all joints = 0)
+  ───────────────────────────────────
+  Body z = 0.422 m
+  Foot center z = 0.422 − 0.210 − 0.190 = 0.022 m  (= foot radius → just touching ground)
+
+  Home keyframe (crouched stance)
+  ───────────────────────────────
+  HAA = 0,  HFE = 0.7 rad,  KFE = −1.4 rad  (all legs)
+  Foot z ≈ 0.022 m  →  body at z = 0.328 m
+-->
+
+<mujoco model="velox">
+  <compiler angle="radian" autolimits="true"/>
+
+  <!-- ═══════════════════════════════════════════════════════════════ DEFAULTS -->
+  <default>
+    <default class="velox">
+      <geom friction="0.6" margin="0.001" condim="3"/>
+      <joint damping="2.5" armature="0.012" frictionloss="0.25"/>
+
+      <!-- Abduction: rotates around X (frontal plane) -->
+      <default class="velox_abduction">
+        <joint axis="1 0 0" range="-0.7 0.7"/>
+        <position kp="80"  ctrlrange="-0.7 0.7"  forcerange="-25 25"/>
+      </default>
+
+      <!-- Front hip flexion: wider forward range for dynamic gaits -->
+      <default class="velox_front_hip">
+        <joint axis="0 1 0" range="-1.5 3.0"/>
+        <position kp="120" ctrlrange="-1.5 3.0"  forcerange="-35 35"/>
+      </default>
+
+      <!-- Rear hip flexion: biased toward extension for push-off -->
+      <default class="velox_rear_hip">
+        <joint axis="0 1 0" range="-0.5 4.0"/>
+        <position kp="120" ctrlrange="-0.5 4.0"  forcerange="-35 35"/>
+      </default>
+
+      <!-- Knee: negative range → knee bends backward (behind the thigh) -->
+      <default class="velox_knee">
+        <joint axis="0 1 0" range="-2.7 -0.5"/>
+        <position kp="100" ctrlrange="-2.7 -0.5" forcerange="-45 45"/>
+      </default>
+
+      <!-- Foot contact: high-priority sphere with 3-D friction cone -->
+      <default class="velox_foot">
+        <geom type="sphere" size="0.022" pos="0 0 -0.19"
+              priority="1" condim="6" solimp="0.015 1 0.022"
+              friction="0.8 0.02 0.01"/>
+      </default>
+    </default>
+  </default>
+
+  <!-- ═══════════════════════════════════════════════════════════════ ASSETS -->
+  <asset>
+    <!-- Body panels: near-black charcoal -->
+    <material name="velox_dark"   rgba="0.12 0.12 0.16 1"/>
+    <!-- Structural joints / motor housings: medium steel gray -->
+    <material name="velox_steel"  rgba="0.38 0.40 0.45 1"/>
+    <!-- Lower legs & accents: burnt orange (high visibility) -->
+    <material name="velox_orange" rgba="0.88 0.36 0.04 1"/>
+    <!-- Feet: matte rubber black -->
+    <material name="velox_rubber" rgba="0.06 0.06 0.07 1"/>
+    <!-- Sensor / detail highlights: cool white -->
+    <material name="velox_white"  rgba="0.90 0.92 0.95 1"/>
+  </asset>
+
+  <!-- ═══════════════════════════════════════════════════════════════ BODIES -->
+  <worldbody>
+    <body name="velox_base" pos="0 0 0.422" childclass="velox">
+      <freejoint/>
+
+      <!-- IMU at body centre -->
+      <site name="velox_imu" size="0.01" pos="0 0 0"/>
+
+      <!-- Tracking camera (third-person) -->
+      <camera name="velox_track" mode="trackcom"
+              pos="0 -1.5 0.8" xyaxes="1 0 0 0 0.47 0.88"/>
+
+      <!-- Inertial (body-frame CoM slightly forward due to sensors) -->
+      <inertial pos="0.015 0 0" mass="6.0"
+                diaginertia="0.0145 0.0833 0.0913"/>
+
+      <!-- ─── Torso geometry ─── -->
+      <!-- Main structural shell -->
+      <geom name="velox_torso" type="box" size="0.19 0.07 0.035"
+            material="velox_dark"/>
+      <!-- Top spine ridge (visual only) -->
+      <geom type="capsule" size="0.018" fromto="-0.14 0 0.035 0.14 0 0.035"
+            material="velox_steel" contype="0" conaffinity="0"/>
+      <!-- Front sensor bump (depth camera housing) -->
+      <geom type="capsule" size="0.023"
+            fromto="0.175 -0.03 -0.005 0.175 0.03 -0.005"
+            material="velox_steel" contype="0" conaffinity="0"/>
+      <geom type="box" size="0.012 0.025 0.018" pos="0.19 0 -0.005"
+            material="velox_dark" contype="0" conaffinity="0"/>
+      <!-- Rear battery pack (visual bump) -->
+      <geom type="box" size="0.055 0.045 0.022" pos="-0.105 0 0.035"
+            material="velox_steel" contype="0" conaffinity="0"/>
+      <!-- Small status LED strip -->
+      <geom type="box" size="0.04 0.004 0.004" pos="0.0 0.072 0.012"
+            material="velox_white" contype="0" conaffinity="0"/>
+
+
+      <!-- ═══════════════════════════════ FRONT-LEFT LEG ══════════════════ -->
+      <body name="velox_FL_hip" pos="0.155 0.073 0">
+        <joint name="velox_FL_abduction" class="velox_abduction"/>
+        <inertial pos="0 0.032 0" mass="0.50"
+                  diaginertia="3.8e-4 4.5e-4 4.5e-4"/>
+        <!-- Motor housing cylinder — aligned along Y (abduction axis) -->
+        <geom type="cylinder" size="0.034 0.0325" pos="0 0.0325 0"
+              quat="0.707107 0.707107 0 0" material="velox_steel"/>
+        <!-- Abductor link bar -->
+        <geom type="capsule" size="0.012" fromto="0 0 0 0 0.065 0"
+              material="velox_dark" contype="0" conaffinity="0"/>
+
+        <body name="velox_FL_thigh" pos="0 0.065 0">
+          <joint name="velox_FL_hip_joint" class="velox_front_hip"/>
+          <inertial pos="0 0 -0.105" mass="0.95"
+                    diaginertia="3.25e-3 3.25e-3 1.45e-4"/>
+          <geom type="capsule" size="0.017" fromto="0 0 0 0 0 -0.21"
+                material="velox_dark"/>
+          <!-- Knee cap accent sphere -->
+          <geom type="sphere" size="0.022" pos="0 0 -0.21"
+                material="velox_steel" contype="0" conaffinity="0"/>
+
+          <body name="velox_FL_calf" pos="0 0 -0.21">
+            <joint name="velox_FL_knee" class="velox_knee"/>
+            <inertial pos="0 0 -0.090" mass="0.28"
+                      diaginertia="6.8e-4 6.8e-4 3.0e-5"/>
+            <geom type="capsule" size="0.013" fromto="0 0 0 0 0 -0.19"
+                  material="velox_orange"/>
+            <geom name="velox_FL_foot" class="velox_foot"
+                  material="velox_rubber"/>
+          </body>
+        </body>
+      </body>
+
+
+      <!-- ═══════════════════════════════ FRONT-RIGHT LEG ═════════════════ -->
+      <body name="velox_FR_hip" pos="0.155 -0.073 0">
+        <joint name="velox_FR_abduction" class="velox_abduction"/>
+        <inertial pos="0 -0.032 0" mass="0.50"
+                  diaginertia="3.8e-4 4.5e-4 4.5e-4"/>
+        <geom type="cylinder" size="0.034 0.0325" pos="0 -0.0325 0"
+              quat="0.707107 0.707107 0 0" material="velox_steel"/>
+        <geom type="capsule" size="0.012" fromto="0 0 0 0 -0.065 0"
+              material="velox_dark" contype="0" conaffinity="0"/>
+
+        <body name="velox_FR_thigh" pos="0 -0.065 0">
+          <joint name="velox_FR_hip_joint" class="velox_front_hip"/>
+          <inertial pos="0 0 -0.105" mass="0.95"
+                    diaginertia="3.25e-3 3.25e-3 1.45e-4"/>
+          <geom type="capsule" size="0.017" fromto="0 0 0 0 0 -0.21"
+                material="velox_dark"/>
+          <geom type="sphere" size="0.022" pos="0 0 -0.21"
+                material="velox_steel" contype="0" conaffinity="0"/>
+
+          <body name="velox_FR_calf" pos="0 0 -0.21">
+            <joint name="velox_FR_knee" class="velox_knee"/>
+            <inertial pos="0 0 -0.090" mass="0.28"
+                      diaginertia="6.8e-4 6.8e-4 3.0e-5"/>
+            <geom type="capsule" size="0.013" fromto="0 0 0 0 0 -0.19"
+                  material="velox_orange"/>
+            <geom name="velox_FR_foot" class="velox_foot"
+                  material="velox_rubber"/>
+          </body>
+        </body>
+      </body>
+
+
+      <!-- ═══════════════════════════════ REAR-LEFT LEG ═══════════════════ -->
+      <body name="velox_RL_hip" pos="-0.155 0.073 0">
+        <joint name="velox_RL_abduction" class="velox_abduction"/>
+        <inertial pos="0 0.032 0" mass="0.50"
+                  diaginertia="3.8e-4 4.5e-4 4.5e-4"/>
+        <geom type="cylinder" size="0.034 0.0325" pos="0 0.0325 0"
+              quat="0.707107 0.707107 0 0" material="velox_steel"/>
+        <geom type="capsule" size="0.012" fromto="0 0 0 0 0.065 0"
+              material="velox_dark" contype="0" conaffinity="0"/>
+
+        <body name="velox_RL_thigh" pos="0 0.065 0">
+          <joint name="velox_RL_hip_joint" class="velox_rear_hip"/>
+          <inertial pos="0 0 -0.105" mass="0.95"
+                    diaginertia="3.25e-3 3.25e-3 1.45e-4"/>
+          <geom type="capsule" size="0.017" fromto="0 0 0 0 0 -0.21"
+                material="velox_dark"/>
+          <geom type="sphere" size="0.022" pos="0 0 -0.21"
+                material="velox_steel" contype="0" conaffinity="0"/>
+
+          <body name="velox_RL_calf" pos="0 0 -0.21">
+            <joint name="velox_RL_knee" class="velox_knee"/>
+            <inertial pos="0 0 -0.090" mass="0.28"
+                      diaginertia="6.8e-4 6.8e-4 3.0e-5"/>
+            <geom type="capsule" size="0.013" fromto="0 0 0 0 0 -0.19"
+                  material="velox_orange"/>
+            <geom name="velox_RL_foot" class="velox_foot"
+                  material="velox_rubber"/>
+          </body>
+        </body>
+      </body>
+
+
+      <!-- ═══════════════════════════════ REAR-RIGHT LEG ══════════════════ -->
+      <body name="velox_RR_hip" pos="-0.155 -0.073 0">
+        <joint name="velox_RR_abduction" class="velox_abduction"/>
+        <inertial pos="0 -0.032 0" mass="0.50"
+                  diaginertia="3.8e-4 4.5e-4 4.5e-4"/>
+        <geom type="cylinder" size="0.034 0.0325" pos="0 -0.0325 0"
+              quat="0.707107 0.707107 0 0" material="velox_steel"/>
+        <geom type="capsule" size="0.012" fromto="0 0 0 0 -0.065 0"
+              material="velox_dark" contype="0" conaffinity="0"/>
+
+        <body name="velox_RR_thigh" pos="0 -0.065 0">
+          <joint name="velox_RR_hip_joint" class="velox_rear_hip"/>
+          <inertial pos="0 0 -0.105" mass="0.95"
+                    diaginertia="3.25e-3 3.25e-3 1.45e-4"/>
+          <geom type="capsule" size="0.017" fromto="0 0 0 0 0 -0.21"
+                material="velox_dark"/>
+          <geom type="sphere" size="0.022" pos="0 0 -0.21"
+                material="velox_steel" contype="0" conaffinity="0"/>
+
+          <body name="velox_RR_calf" pos="0 0 -0.21">
+            <joint name="velox_RR_knee" class="velox_knee"/>
+            <inertial pos="0 0 -0.090" mass="0.28"
+                      diaginertia="6.8e-4 6.8e-4 3.0e-5"/>
+            <geom type="capsule" size="0.013" fromto="0 0 0 0 0 -0.19"
+                  material="velox_orange"/>
+            <geom name="velox_RR_foot" class="velox_foot"
+                  material="velox_rubber"/>
+          </body>
+        </body>
+      </body>
+
+    </body>
+  </worldbody>
+
+  <!-- ══════════════════════════════════════════════════════════════ ACTUATORS
+       Order: FL → FR → RL → RR, within each leg: abduction, hip, knee
+  -->
+  <actuator>
+    <position name="velox_FL_abduction" joint="velox_FL_abduction" class="velox_abduction"/>
+    <position name="velox_FL_hip"       joint="velox_FL_hip_joint"  class="velox_front_hip"/>
+    <position name="velox_FL_knee"      joint="velox_FL_knee"        class="velox_knee"/>
+
+    <position name="velox_FR_abduction" joint="velox_FR_abduction"  class="velox_abduction"/>
+    <position name="velox_FR_hip"       joint="velox_FR_hip_joint"   class="velox_front_hip"/>
+    <position name="velox_FR_knee"      joint="velox_FR_knee"        class="velox_knee"/>
+
+    <position name="velox_RL_abduction" joint="velox_RL_abduction"  class="velox_abduction"/>
+    <position name="velox_RL_hip"       joint="velox_RL_hip_joint"   class="velox_rear_hip"/>
+    <position name="velox_RL_knee"      joint="velox_RL_knee"        class="velox_knee"/>
+
+    <position name="velox_RR_abduction" joint="velox_RR_abduction"  class="velox_abduction"/>
+    <position name="velox_RR_hip"       joint="velox_RR_hip_joint"   class="velox_rear_hip"/>
+    <position name="velox_RR_knee"      joint="velox_RR_knee"        class="velox_knee"/>
+  </actuator>
+
+  <!-- ════════════════════════════════════════════════════════════════ SENSORS -->
+  <sensor>
+    <framepos      objtype="site" objname="velox_imu" name="velox_position"/>
+    <framequat     objtype="site" objname="velox_imu" name="velox_orientation"/>
+    <gyro          site="velox_imu"                   name="velox_gyro"/>
+    <velocimeter   site="velox_imu"                   name="velox_linvel"/>
+    <accelerometer site="velox_imu"                   name="velox_accelerometer"/>
+    <framezaxis    objtype="site" objname="velox_imu" name="velox_upvector"/>
+    <framexaxis    objtype="site" objname="velox_imu" name="velox_forwardvector"/>
+    <framelinvel   objtype="site" objname="velox_imu" name="velox_global_linvel"/>
+    <frameangvel   objtype="site" objname="velox_imu" name="velox_global_angvel"/>
+  </sensor>
+
+
+</mujoco>
