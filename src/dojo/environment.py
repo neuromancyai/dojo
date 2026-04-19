@@ -1,16 +1,25 @@
-import jax
-
-from typing import Protocol
+from typing import NamedTuple, Optional, Protocol
 from collections.abc import Callable, Mapping
+
+from jax import Array
+from jaxtyping import Bool
 
 
 __all__ = (
-    "Extract",
+    "FeatureExtractor",
     "Observe",
     "Reward"
 )
 
 
-type Extract[S, F] = Callable[[S], F]
-type Observe[F] = Callable[[F], jax.Array]
-type Reward[F] = Callable[[F, jax.Array], Mapping[dict, jax.Array]]
+type Rng = Array
+type Done = Bool[Array, ""]
+
+
+class FeatureExtractor[S, F](NamedTuple):
+    init: Callable[[S, Rng], tuple[F, Done, Rng]]
+    step: Callable[[F, S, Array, Rng], tuple[F, Done, Rng]]
+
+
+type Observe[F] = Callable[[F, Done], Mapping[str, Array]]
+type Reward[F] = Callable[[F, Done], Mapping[str, Array]]
