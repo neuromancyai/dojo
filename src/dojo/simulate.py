@@ -7,24 +7,27 @@ from pathlib import Path
 
 import jax
 import jax.numpy as jp
+import matplotlib.pyplot as plt
 import mujoco
 import mujoco.viewer
+import numpy as np
 
 from brax.training.agents.ppo import networks as ppo_networks
 from brax.training.agents.ppo import train as ppo
 from mujoco import MjModel
 
 from .brax import Environment, wrap
-from .quadruped.joystick.brax import (
+from .quadruped.sit import (
     Config as EnvironmentConfig,
     feature_extractor,
     observe,
     reward
 )
+
 from .training import Config as TrainingConfig
 
 
-COMMAND = jp.array([1.0, 0.0, 0.0])  # vx, vy, yaw
+COMMAND = jp.array([1.0])
 
 
 def main():
@@ -37,7 +40,7 @@ def main():
         mj_model,
         functools.partial(feature_extractor, environment_config),
         observe,
-        reward(environment_config.reward),
+        reward(environment_config),
         control_dt=environment_config.ctrl_dt,
         substeps=int(environment_config.ctrl_dt / environment_config.sim_dt),
         nconmax=environment_config.nconmax,
@@ -93,10 +96,15 @@ def main():
     jax.block_until_ready(state)
     print("Ready.")
 
+    step_count = 0
     with mujoco.viewer.launch_passive(mj_model, mj_data) as viewer:
         while viewer.is_running():
             rng, step_key = jax.random.split(rng)
             action, _ = inference_fn(state.obs, step_key)
+            if step_count % 50 == 0:
+                a = np.array(action)
+                print(f"action min={a.min():.3f} max={a.max():.3f}")
+            step_count += 1
             state = step_fn(state, action)
             state = inject_command(state, COMMAND)
 

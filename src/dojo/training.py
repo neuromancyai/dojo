@@ -11,7 +11,7 @@ from mujoco import MjModel
 
 from .brax import Environment, wrap 
 from .utility.dataclasses import default_field
-from .quadruped.joystick.brax import (
+from .quadruped.sit import (
     Config as EnvironmentConfig,
     feature_extractor,
     observe,
@@ -80,7 +80,7 @@ def main():
         mj_model,
         functools.partial(feature_extractor, environment_config),
         observe,
-        reward(environment_config.reward),
+        reward(environment_config),
         control_dt=environment_config.ctrl_dt,
         substeps=int(environment_config.ctrl_dt / environment_config.sim_dt),
         nconmax=environment_config.nconmax,

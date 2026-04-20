@@ -98,7 +98,9 @@ class Environment[F]:
         lower_control_limits = self._mj_model.actuator_ctrlrange[:, 0]
         upper_control_limits = self._mj_model.actuator_ctrlrange[:, 1]
 
-        targets = default_pose + 0.3 * action
+        action_scale = jp.array([0.785, 1.5, 2.79] * 4)
+        #action_scale = 0.3
+        targets = default_pose + action_scale * action
         targets = jp.clip(targets, lower_control_limits, upper_control_limits)
 
         data = step(

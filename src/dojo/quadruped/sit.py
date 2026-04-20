@@ -9,9 +9,9 @@ from jax import Array, numpy as jp
 from jaxtyping import Bool, Float, Int
 from mujoco import MjModel, mjx
 
-from ...environment import Done, FeatureExtractor, Reward, Rng
-from ...utility.dataclasses import default_field
-from ...utility.mujoco import read_sensor
+from ..environment import Done, FeatureExtractor, Reward, Rng
+from ..utility.dataclasses import default_field
+from ..utility.mujoco import read_sensor
 
 
 @dataclass
@@ -34,37 +34,22 @@ class Config:
 
         @dataclass
         class Scale:
-            tracking_linvel: float = 1.5
-            tracking_angvel: float = 0.8
-            linvel_z: float = -2.0
-            angvel_xy: float = -0.05
-            orientation: float = -5.0
-            posture: float = 1.0
+            tracking_z: float = 1.0
+            linvel: float = -1.0
+            angvel: float = -0.05 # -5.0
+            orientation: float = -1.0 #-5.0
+            posture: float = -0.5 # -5.0
             termination: float = -1.0
-            torques: float = -0.0002
-            action_rate: float = -0.01
-            energy: float = -0.001
-            feet_slip: float = -0.1
-            feet_clearance: float = -2.0
-            feet_height: float = -0.1
-            feet_air_time: float = 0.1
+            torques: float = 0 #-0.0002
+            action_rate: float = 0#-0.01
+            energy: float = 0 #-0.001
+            feet_slip: float = 0 #-0.001
+            knee_height: float = 0#5.0
+            feet_deviation: float = 0# -5.0
 
         scale: Scale = default_field(Scale())
-        tracking_sigma: float = 0.25
+        tracking_sigma: float = 0.05
         max_foot_height: float = 0.12
-
-    @dataclass
-    class Perturbation:
-        enable: bool = False
-        velocity_kick: tuple[float, float] = (0.0, 3.0)
-        kick_durations: tuple[float, float ] = (0.05, 0.2)
-        kick_wait_times: tuple[float, float] = (1.0, 3.0)
-
-    @dataclass
-    class Command:
-        lin_vel_x: tuple[float, float] = (-1.0, 1.0)
-        lin_vel_y: tuple[float, float] = (-0.8, 0.8)
-        ang_vel_yaw: tuple[float, float] = (-1.0, 1.0)
 
     @dataclass
     class Sensor:
@@ -105,31 +90,35 @@ class Config:
     @dataclass
     class Geometry:
         body: str = "body"
+        z_range: tuple[float, float] = (0.169, 0.441)
+        knees: tuple[str, str, str, str] = (
+            "fl_lleg",
+            "fr_lleg",
+            "hl_lleg",
+            "hr_lleg"
+        )
+        knee_min_height: float = 0.05
 
     ctrl_dt: float = 0.02
     sim_dt: float = 0.004
     episode_length: float = 1000
-    kp: float = 300.0
-    kd: float = 1.0
     early_termination: bool = True
     action_repeat: int = 1
     action_scale: float = 0.3
     history_len: int = 3
     obs_noise: ObservationNoise = default_field(ObservationNoise())
     reward: Reward = default_field(Reward())
-    pert: Perturbation = default_field(Perturbation())
-    command: Command = default_field(Command())
     geometry: Geometry = default_field(Geometry())
     nconmax: int = 4 * 8192
-    njmax: int = 32
+    njmax: int = 64
     sensor: Sensor = default_field(Sensor())
 
 
 @flax.struct.dataclass
 class Features:
     steps_since_last_command: Int[Array, ""]
-    previous_command: Float[Array, "3"]
-    current_command: Float[Array, "3"]
+    previous_command: Float[Array, "1"]
+    current_command: Float[Array, "1"]
 
     action_history: Float[Array, "36"]
     motor_targets: Float[Array, "12"]
@@ -154,7 +143,10 @@ class Features:
     feet_contacts: Bool[Array, "4"]
     foot_linvel: Float[Array, "12"]
 
+    body_z: Float[Array, ""]
     feet_z: Float[Array, "4"]
+    knee_height: Float[Array, "4"]
+    home_feet_pos: Float[Array, "12"]
 
     body_force: Float[Array, "3"]
     actuator_force: Float[Array, "12"]
@@ -163,33 +155,21 @@ class Features:
     noisy_joint_angle_deltas: Float[Array, "12"]
 
 
-def _sample_command(config: Config.Command, rng: Rng) -> tuple[Array, Rng]:
-    rng, key_1, key_2, key_3, key_4 = jax.random.split(rng, 5)
+def _sample_command(rng: Rng) -> tuple[Array, Rng]:
+    rng, key_1, key_2 = jax.random.split(rng, 3)
 
-    lin_vel_x = jax.random.uniform(
+    pos_z = jax.random.uniform(
         key_1,
-        minval=config.lin_vel_x[0],
-        maxval=config.lin_vel_x[1]
+        minval=0.0,
+        maxval=1.0
     )
 
-    lin_vel_y = jax.random.uniform(
-        key_2,
-        minval=config.lin_vel_y[0],
-        maxval=config.lin_vel_y[1]
-    )
-
-    ang_vel_yaw = jax.random.uniform(
-        key_3,
-        minval=config.ang_vel_yaw[0],
-        maxval=config.ang_vel_yaw[1]
-    )
-
-    command = jp.hstack([lin_vel_x, lin_vel_y, ang_vel_yaw])
+    command = jp.hstack([1.0])
 
     return (
         jp.where(
-            jax.random.bernoulli(key_4, 0.1),
-            jp.zeros(3),
+            jax.random.bernoulli(key_2, 0.4),
+            jp.zeros(1),
             command
         ),
         rng
@@ -316,17 +296,22 @@ def feature_extractor(
     feet_site_ids = np.array(
         [mj_model.site(name).id for name in config.sensor.feet_sites]
     )
+    knee_body_ids = np.array(
+        [mj_model.body(name).id for name in config.geometry.knees]
+    )
 
     def init(data: mjx.Data, rng: Rng) -> tuple[Features, Done, Rng]:
         readout, rng = _read_sensors(config, mj_model, data, rng)
-        previous_command, rng = _sample_command(config.command, rng)
+        previous_command, rng = _sample_command(rng)
 
         body_force = data.xfrc_applied[body_id, :3]
         actuator_force = data.actuator_force
         joint_qvel = data.qvel[6:]
         joint_angle_deltas = readout.joint_angles - default_pose
         noisy_joint_angle_deltas = readout.noisy_joint_angles - default_pose
+        body_z = data.qpos[2]
         feet_z = data.site_xpos[feet_site_ids][..., -1]
+        knee_height = data.xpos[knee_body_ids, 2]
 
         done = jp.zeros((), dtype=jp.bool_)
 
@@ -359,7 +344,10 @@ def feature_extractor(
                 feet_contacts=readout.feet_contacts,
                 foot_linvel=readout.foot_linvel,
 
+                body_z=body_z,
                 feet_z=feet_z,
+                knee_height=knee_height,
+                home_feet_pos=readout.feet_pos,
                 body_force=body_force,
                 actuator_force=actuator_force,
                 joint_qvel=joint_qvel,
@@ -376,7 +364,7 @@ def feature_extractor(
         action: Array,
         rng: Rng
     ) -> tuple[Features, Done, Rng]:
-        motor_targets = default_pose + 0.3 * action
+        motor_targets = default_pose + jp.array([0.785, 1.5, 2.79] * 4) * action
         motor_targets = jp.clip(
             motor_targets,
             lower_control_limits,
@@ -410,7 +398,7 @@ def feature_extractor(
         )
 
         steps_since_last_command = previous.steps_since_last_command + 1
-        new_command, rng = _sample_command(config.command, rng)
+        new_command, rng = _sample_command(rng)
         previous_command = previous.current_command
         current_command = jp.where(
             steps_since_last_command > 200,
@@ -424,6 +412,8 @@ def feature_extractor(
             steps_since_last_command
         )
 
+        body_z = data.qpos[2]
+        knee_height = data.xpos[knee_body_ids, 2]
         body_force = data.xfrc_applied[body_id, :3]
         actuator_force = data.actuator_force
         joint_qvel = data.qvel[6:]
@@ -465,7 +455,10 @@ def feature_extractor(
                 feet_contacts=readout.feet_contacts,
                 foot_linvel=readout.foot_linvel,
 
+                body_z=body_z,
                 feet_z=feet_z_positions,
+                knee_height=knee_height,
+                home_feet_pos=previous.home_feet_pos,
                 body_force=body_force,
                 actuator_force=actuator_force,
                 joint_qvel=joint_qvel,
@@ -511,38 +504,39 @@ def observe(features: Features, _: Done) -> dict[str, Array]:
     }
 
 
-def reward(config: Config.Reward) -> Reward[Features]:
+def reward(config: Config) -> Reward[Features]:
     def call(features: Features, done: Done) -> dict[str, Array]:
-        def tracking_linvel():
-            error = jp.sum(
-                jp.square(
-                    features.previous_command[:2] - features.local_linvel[:2]
-                )
-            )
+        def tracking_z():
+            sigma = config.reward.tracking_sigma
+            z_range = config.geometry.z_range
+            command = features.previous_command[0]
+            body_z = features.body_z
 
-            return jp.exp(-error / config.tracking_sigma)
+            target = command * (z_range[0] - z_range[1]) + z_range[1]
+            error = target - body_z
 
-        def tracking_angvel():
-            error = jp.square(features.previous_command[2] - features.gyro[2])
+            return jp.exp(-jp.square(error) / sigma)
 
-            return jp.exp(-error / config.tracking_sigma)
+        def linvel():
+            weights = jp.array([1.0, 1.0, 0.1])
 
-        def linvel_z():
-            return jp.square(features.global_linvel[2])
+            return jp.sum(jp.square(features.global_linvel * weights))
 
-        def angvel_xy():
-            return jp.sum(jp.square(features.global_angvel[:2]))
+        def angvel():
+            return jp.sum(jp.square(features.global_angvel))
 
         def orientation():
             return jp.sum(jp.square(features.gravity[:2]))
 
         def posture():
-            weights = jp.array([1.0, 1.0, 1.0] * 4)
-            cost = jp.sum(jp.square(features.joint_angle_deltas) * weights)
             norm = jp.linalg.norm(features.previous_command)
-            weight = jp.where(norm < 0.01, -10.0, 0.0)
+            weights = jp.where(
+                norm < 0.01,
+                jp.array([1.0, 1.0, 1.0] * 4),
+                jp.array([1.0, 0.0, 0.0] * 4)
+            )
 
-            return jp.exp(weight * cost)
+            return jp.sum(jp.square(features.joint_angle_deltas) * weights)
 
         def termination():
             return done
@@ -580,37 +574,19 @@ def reward(config: Config.Reward) -> Reward[Features]:
                 jp.sum(jp.square(foot_linvel_xy), axis=-1) * features.feet_contacts
             )
 
-        def feet_clearance():
-            foot_linvel_xy = features.foot_linvel.reshape(4, 3)[..., :2]
-            norm = jp.sqrt(jp.linalg.norm(foot_linvel_xy, axis=-1))
-            delta = jp.abs(features.feet_z - config.max_foot_height)
-
-            return jp.sum(delta * norm)
-
-        def feet_height():
-            norm = jp.linalg.norm(features.previous_command)
-            error = features.swing_peak / config.max_foot_height - 1.0
-
-            cost = jp.sum(jp.square(error) * features.first_contact)
-            cost *= norm >= 0.01
-
-            return cost
-
-        def feet_air_time():
-            command = jp.linalg.norm(features.previous_command)
-            reward = jp.sum(
-                (features.feet_air_time - 0.1) * features.first_contact
+        def knee_height():
+            return jp.sum(
+                100 * jp.minimum(features.knee_height - config.geometry.knee_min_height, 0.0)
             )
 
-            reward *= command >= 0.01
-            
-            return reward
+        def feet_deviation():
+            delta = (features.feet_pos - features.home_feet_pos).reshape(4, 3)
+            return jp.sum(jp.square(delta[:, :2]))
 
         terms = {
-            "tracking_linvel": tracking_linvel(),
-            "tracking_angvel": tracking_angvel(),
-            "linvel_z": linvel_z(),
-            "angvel_xy": angvel_xy(),
+            "tracking_z": tracking_z(),
+            "linvel": linvel(),
+            "angvel": angvel(),
             "orientation": orientation(),
             "posture": posture(),
             "termination": termination(),
@@ -618,13 +594,12 @@ def reward(config: Config.Reward) -> Reward[Features]:
             "action_rate": action_rate(),
             "energy": energy(),
             "feet_slip": feet_slip(),
-            "feet_clearance": feet_clearance(),
-            "feet_height": feet_height(),
-            "feet_air_time": feet_air_time()
+            "knee_height": knee_height(),
+            "feet_deviation": feet_deviation()
         }
 
         rewards = {
-            k: v * getattr(config.scale, k)
+            k: v * getattr(config.reward.scale, k)
             for k, v in terms.items()
         }
 
