@@ -38,11 +38,11 @@ class Config:
             linvel: float = -1.0
             angvel: float = -0.05 # -5.0
             orientation: float = -1.0 #-5.0
-            posture: float = -0.5 # -5.0
+            posture: float = -1.0 # -5.0
             termination: float = -1.0
-            torques: float = 0 #-0.0002
-            action_rate: float = 0#-0.01
-            energy: float = 0 #-0.001
+            torques: float = -0.00001
+            action_rate: float = -0.1
+            energy: float = -0.001
             feet_slip: float = 0 #-0.001
             knee_height: float = 0#5.0
             feet_deviation: float = 0# -5.0
@@ -526,7 +526,7 @@ def reward(config: Config) -> Reward[Features]:
             return jp.sum(jp.square(features.global_angvel))
 
         def orientation():
-            return jp.sum(jp.square(features.gravity[:2]))
+            return jp.sum(jp.abs(features.gravity[:2]) + jp.square(features.gravity[:2]))
 
         def posture():
             norm = jp.linalg.norm(features.previous_command)
