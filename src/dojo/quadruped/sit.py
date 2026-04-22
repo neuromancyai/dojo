@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import NamedTuple
 
 import flax.struct
@@ -34,21 +34,23 @@ class Config:
 
         @dataclass
         class Scale:
-            tracking_z: float = 1.0
-            linvel: float = -1.0
-            angvel: float = -0.05 # -5.0
-            orientation: float = -1.0 #-5.0
-            posture: float = -1.0 # -5.0
-            termination: float = -1.0
-            torques: float = -0.00001
-            action_rate: float = -0.1
-            energy: float = -0.001
+            tracking_z: float = 1.0# 1.0
+            linvel: float = 0
+            angvel: float = -0.1 # -5.0
+            orientation: float = -5.0 #-5.0
+            posture: float = -2.0 # -5.0
+            termination: float = -500.0
+            torques: float = 0# -0.0001
+            action_rate: float = -0.01
+            energy: float = -0.05
             feet_slip: float = 0 #-0.001
-            knee_height: float = 0#5.0
-            feet_deviation: float = 0# -5.0
+            knee_height: float = 5.0#5.0
+            feet_deviation: float = -1.0#-1.0# -5.0
+            symmetry: float = -1.0
+            feet_air_time: float = -1.0
 
         scale: Scale = default_field(Scale())
-        tracking_sigma: float = 0.05
+        tracking_sigma: float = 0.1
         max_foot_height: float = 0.12
 
     @dataclass
@@ -364,7 +366,7 @@ def feature_extractor(
         action: Array,
         rng: Rng
     ) -> tuple[Features, Done, Rng]:
-        motor_targets = default_pose + jp.array([0.785, 1.5, 2.79] * 4) * action
+        motor_targets = default_pose + jp.array([0.8, 1.5, 2.8] * 4) * action
         motor_targets = jp.clip(
             motor_targets,
             lower_control_limits,
@@ -515,10 +517,10 @@ def reward(config: Config) -> Reward[Features]:
             target = command * (z_range[0] - z_range[1]) + z_range[1]
             error = target - body_z
 
-            return jp.exp(-jp.square(error) / sigma)
+            return jp.exp(-jp.abs(error) / sigma)
 
         def linvel():
-            weights = jp.array([1.0, 1.0, 0.1])
+            weights = jp.array([1.0, 1.0, 0.5])
 
             return jp.sum(jp.square(features.global_linvel * weights))
 
@@ -526,7 +528,7 @@ def reward(config: Config) -> Reward[Features]:
             return jp.sum(jp.square(features.global_angvel))
 
         def orientation():
-            return jp.sum(jp.abs(features.gravity[:2]) + jp.square(features.gravity[:2]))
+            return jp.sum(jp.square(features.gravity[:2]))
 
         def posture():
             norm = jp.linalg.norm(features.previous_command)
@@ -564,7 +566,7 @@ def reward(config: Config) -> Reward[Features]:
 
         def energy():
             return jp.sum(
-                jp.abs(features.joint_qvel) * jp.abs(features.actuator_force)
+                jp.square(features.joint_qvel)
             )
 
         def feet_slip():
@@ -575,13 +577,21 @@ def reward(config: Config) -> Reward[Features]:
             )
 
         def knee_height():
-            return jp.sum(
-                100 * jp.minimum(features.knee_height - config.geometry.knee_min_height, 0.0)
-            )
+            return jp.sum(jp.minimum(features.knee_height - config.geometry.knee_min_height, 0.0))
 
         def feet_deviation():
             delta = (features.feet_pos - features.home_feet_pos).reshape(4, 3)
             return jp.sum(jp.square(delta[:, :2]))
+
+        def feet_air_time():
+            return jp.sum(features.feet_air_time * ~features.feet_contacts)
+
+        def symmetry():
+            q = features.joint_angles.reshape(4, 3)
+            fl, fr, hl, hr = q[0], q[1], q[2], q[3]
+            front = jp.square(fl[0] + fr[0]) + jp.sum(jp.square(fl[1:] - fr[1:]))
+            hind = jp.square(hl[0] + hr[0]) + jp.sum(jp.square(hl[1:] - hr[1:]))
+            return front + hind
 
         terms = {
             "tracking_z": tracking_z(),
@@ -595,12 +605,19 @@ def reward(config: Config) -> Reward[Features]:
             "energy": energy(),
             "feet_slip": feet_slip(),
             "knee_height": knee_height(),
-            "feet_deviation": feet_deviation()
+            "feet_deviation": feet_deviation(),
+            "symmetry": symmetry(),
+            "feet_air_time": feet_air_time()
         }
 
+        zero_scale_keys = {
+            f.name for f in fields(config.reward.scale)
+            if getattr(config.reward.scale, f.name) == 0.0
+        }
         rewards = {
             k: v * getattr(config.reward.scale, k)
             for k, v in terms.items()
+            if k not in zero_scale_keys
         }
 
         return rewards

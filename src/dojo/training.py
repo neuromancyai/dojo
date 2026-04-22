@@ -2,14 +2,17 @@
 import functools
 import os
 
+from collections import defaultdict
 from dataclasses import dataclass, asdict
 from pathlib import Path
+
+import matplotlib.pyplot as plt
 
 from brax.training.agents.ppo import networks as ppo_networks
 from brax.training.agents.ppo import train as ppo
 from mujoco import MjModel
 
-from .brax import Environment, wrap 
+from .brax import Environment, wrap
 from .utility.dataclasses import default_field
 from .quadruped.sit import (
     Config as EnvironmentConfig,
@@ -68,9 +71,29 @@ class Config:
 
 
 def main():
+    history = defaultdict(list)
+    steps_history = []
+
     def progress(num_steps, metrics):
         reward = metrics.get("eval/episode_reward", float("nan"))
         print(f"steps={num_steps:>12,}  reward={float(reward):>10.3f}  {metrics}")
+
+        keys = [
+            k for k in metrics
+            if k.startswith("eval/episode_reward") and not k.endswith("_std")
+        ]
+        steps_history.append(num_steps)
+        for k in keys:
+            history[k].append(float(metrics[k]))
+
+        plt.clf()
+        for k, values in history.items():
+            plt.plot(steps_history[:len(values)], values, label=k.removeprefix("eval/episode_reward/"))
+        plt.xlabel("steps")
+        plt.ylabel("reward")
+        plt.legend(fontsize="x-small")
+        plt.tight_layout()
+        plt.savefig("rewards.png", dpi=100)
 
     mj_model_path = Path("./scene.xml")
     mj_model = MjModel.from_xml_string(mj_model_path.read_text())
