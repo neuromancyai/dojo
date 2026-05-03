@@ -1,3 +1,5 @@
+import contextlib
+
 from collections.abc import Callable
 from typing import Any, Optional
 
@@ -55,6 +57,14 @@ class Environment[F]:
     def action_size(self) -> int:
         return self._mjx_model.nu
 
+    @property
+    def mjx_model(self) -> mjx.Model:
+        return self._mjx_model
+
+    @property
+    def unwrapped(self) -> "Environment":
+        return self
+
     def reset(self, rng: Array) -> State:
         self._feature_extractor = self._feature_extractor_factory(
             self._mj_model,
@@ -65,6 +75,7 @@ class Environment[F]:
             self._mj_model,
             qpos=jp.array(self._mj_model.keyframe("home").qpos),
             qvel=jp.zeros(self._mjx_model.nv),
+            ctrl=jp.array(self._mj_model.keyframe("home").ctrl),
             nconmax=self._nconmax,
             njmax=self._njmax,
             impl="warp",
@@ -94,14 +105,14 @@ class Environment[F]:
         )
 
     def step(self, state: State, action: Array) -> State:
-        default_pose = self._mj_model.keyframe("home").qpos[7:]
+        default_pose_ctrl = self._mj_model.keyframe("home").ctrl
         lower_control_limits = self._mj_model.actuator_ctrlrange[:, 0]
         upper_control_limits = self._mj_model.actuator_ctrlrange[:, 1]
 
-        action_scale = jp.array([0.8, 1.5, 2.8] * 4)
-        #action_scale = 0.3
-        targets = default_pose + action_scale * action
+        targets = default_pose_ctrl + jp.array([0.8, 1.25, 2.48] * 4) * action
         targets = jp.clip(targets, lower_control_limits, upper_control_limits)
+        # jax.debug.print("action:  {}", action)
+        # jax.debug.print("targets: {}", targets)
 
         data = step(
             self._mjx_model,
@@ -131,6 +142,38 @@ class Environment[F]:
         state = state.replace(data=data, obs=obs, reward=reward, done=done, metrics=metrics)
 
         return state
+
+
+class DomainRandomizationVmapWrapper:
+    def __init__(self, env: Any, randomization_fn: Callable):
+        self._env = env
+        self._mjx_model_v, self._in_axes = randomization_fn(env.mjx_model)
+
+    @property
+    def action_size(self) -> int:
+        return self._env.action_size
+
+    @contextlib.contextmanager
+    def _v_env(self, mjx_model: mjx.Model):
+        env = self._env.unwrapped
+        old = env._mjx_model
+        try:
+            env._mjx_model = mjx_model
+            yield env
+        finally:
+            env._mjx_model = old
+
+    def reset(self, rng: Array) -> State:
+        def reset_fn(mjx_model, rng):
+            with self._v_env(mjx_model) as env:
+                return env.reset(rng)
+        return jax.vmap(reset_fn, in_axes=(self._in_axes, 0))(self._mjx_model_v, rng)
+
+    def step(self, state: State, action: Array) -> State:
+        def step_fn(mjx_model, state, action):
+            with self._v_env(mjx_model) as env:
+                return env.step(state, action)
+        return jax.vmap(step_fn, in_axes=(self._in_axes, 0, 0))(self._mjx_model_v, state, action)
 
 
 class AutoResetWrapper:
@@ -209,9 +252,13 @@ def wrap(
     episode_length: int,
     action_repeat: int,
     full_reset: bool,
+    randomization_fn: Optional[Callable] = None,
     **_
 ) -> Any:
-    env = brax_training.VmapWrapper(env)
+    if randomization_fn is None:
+        env = brax_training.VmapWrapper(env)
+    else:
+        env = DomainRandomizationVmapWrapper(env, randomization_fn)
     env = brax_training.EpisodeWrapper(env, episode_length, action_repeat)
     env = AutoResetWrapper(env, full_reset)
 

@@ -25,6 +25,7 @@ class Config:
             joint_pos: float = 0.05
             gyro: float = 0.1
             gravity: float = 0.03
+            accelerometer: float = 0.05
             feet_pos: tuple[float, float, float] = (0.01, 0.005, 0.02)
 
         scale: Scale = default_field(Scale())
@@ -34,25 +35,25 @@ class Config:
 
         @dataclass
         class Scale:
-            tracking_z: float = 1.0# 1.0
+            tracking_z: float = 1.0
             linvel: float = -2.0
-            angvel: float = -0.05 # -5.0
-            orientation: float = -4.0 #-5.0
-            posture: float = -1.0 # -5.0
-            termination: float = -100.0
+            angvel: float = -0.05 
+            orientation: float = -5.0
+            posture: float = -2.0
+            termination: float = -200.0
             torques: float = -0.0002
-            action_rate: float = -0.01
+            action_rate: float = -0.009
             energy: float = -0.0002
-            feet_slip: float = 0 #-0.001
-            knee_height: float = 0.0#5.0
-            feet_deviation: float = -5.0#-1.0# -5.0
+            feet_slip: float = 0.0
+            knee_height: float = 0.0
+            feet_deviation: float = -5.0
             symmetry: float = -1.0
-            feet_air_time: float = -5.0#-5.0
-            torque_rate: float = -0.0000025
-            joint_qvel_rate: float = 0#-0.0001
+            feet_air_time: float = -5.0
+            torque_rate: float = 0.0
+            joint_qvel_rate: float = 0.0
 
         scale: Scale = default_field(Scale())
-        tracking_sigma: float = 0.02
+        tracking_sigma: float = 0.025
         max_foot_height: float = 0.12
 
     @dataclass
@@ -64,47 +65,47 @@ class Config:
         gyro: str = "gyro"
         gravity: str = "upvector"
         feet_sites: tuple[str, str, str, str] = (
-            "FL",
-            "FR",
-            "HL",
-            "HR"
+            "fl",
+            "fr",
+            "rl",
+            "rr"
         )
 
         feet_pos: tuple[str, str, str, str] = (
-            "FL_pos",
-            "FR_pos",
-            "HL_pos",
-            "HR_pos"
+            "fl_pos",
+            "fr_pos",
+            "rl_pos",
+            "rr_pos"
         )
 
         feet_contacts: tuple[str, str, str, str] = (
-            "FL_floor_found",
-            "FR_floor_found",
-            "HL_floor_found",
-            "HR_floor_found"
+            "fl_floor_found",
+            "fr_floor_found",
+            "rl_floor_found",
+            "rr_floor_found"
         )
 
         foot_linvel: tuple[str, str, str, str] = (
-            "FL_global_linvel",
-            "FR_global_linvel",
-            "HL_global_linvel",
-            "HR_global_linvel"
+            "fl_global_linvel",
+            "fr_global_linvel",
+            "rl_global_linvel",
+            "rr_global_linvel"
         )
     
     @dataclass
     class Geometry:
-        body: str = "body"
-        z_range: tuple[float, float] = (0.169, 0.441)
+        body: str = "root"
+        z_range: tuple[float, float] = (0.115, 0.292)
         knees: tuple[str, str, str, str] = (
-            "fl_lleg",
-            "fr_lleg",
-            "hl_lleg",
-            "hr_lleg"
+            "lower_leg_part_1",
+            "lower_leg_part_2",
+            "lower_leg_part_3",
+            "lower_leg_part_4"
         )
         knee_min_height: float = 0.05
 
     ctrl_dt: float = 0.02
-    sim_dt: float = 0.004
+    sim_dt: float = 0.001
     episode_length: float = 1000
     early_termination: bool = True
     action_repeat: int = 1
@@ -133,6 +134,7 @@ class Features:
     swing_peak: Float[Array, "4"]
 
     accelerometer: Float[Array, "3"]
+    noisy_accelerometer: Float[Array, "3"]
     local_linvel: Float[Array, "3"]
     global_linvel: Float[Array, "3"]
     global_angvel: Float[Array, "3"]
@@ -178,6 +180,7 @@ def _sample_command(rng: Rng) -> tuple[Array, Rng]:
 
 class _SensorReadout(NamedTuple):
     accelerometer: Float[Array, "3"]
+    noisy_accelerometer: Float[Array, "3"]
     local_linvel: Float[Array, "3"]
     global_linvel: Float[Array, "3"]
     global_angvel: Float[Array, "3"]
@@ -201,24 +204,28 @@ def _read_sensors(
 ) -> tuple[_SensorReadout, Rng]:
     rng, key_1 = jax.random.split(rng)
     accelerometer = read_sensor(mj_model, data, config.sensor.accelerometer)
+    noisy_accelerometer = accelerometer + \
+        (2 * jax.random.uniform(key_1, shape=accelerometer.shape) - 1) * \
+        config.obs_noise.scale.accelerometer
     local_linvel = read_sensor(mj_model, data, config.sensor.local_linvel)
     global_linvel = read_sensor(mj_model, data, config.sensor.global_linvel)
     global_angvel = read_sensor(mj_model, data, config.sensor.global_angvel)
+    rng, key_2 = jax.random.split(rng)
     gyro = read_sensor(mj_model, data, config.sensor.gyro)
     noisy_gyro = gyro + \
-        (2 * jax.random.uniform(key_1, shape=gyro.shape) - 1) * \
+        (2 * jax.random.uniform(key_2, shape=gyro.shape) - 1) * \
         config.obs_noise.scale.gyro
 
-    rng, key_2 = jax.random.split(rng)
+    rng, key_3 = jax.random.split(rng)
     gravity = read_sensor(mj_model, data, config.sensor.gravity)
     noisy_gravity = gravity + \
-        (2 * jax.random.uniform(key_2, shape=gravity.shape) - 1) * \
+        (2 * jax.random.uniform(key_3, shape=gravity.shape) - 1) * \
         config.obs_noise.scale.gravity
 
-    rng, key_3 = jax.random.split(rng)
+    rng, key_4 = jax.random.split(rng)
     joint_angles = data.qpos[7:]
     noisy_joint_angles = joint_angles + \
-        (2 * jax.random.uniform(key_3, shape=joint_angles.shape) - 1) * \
+        (2 * jax.random.uniform(key_4, shape=joint_angles.shape) - 1) * \
         config.obs_noise.scale.joint_pos
 
     feet_pos = jp.vstack([
@@ -226,26 +233,26 @@ def _read_sensors(
         for name in config.sensor.feet_pos
     ])
 
-    rng, key_4 = jax.random.split(rng)
+    rng, key_5 = jax.random.split(rng)
 
     noisy_feet_pos = feet_pos \
         .at[..., 0] \
         .add(
-            (2 * jax.random.uniform(key_4, shape=feet_pos[..., 0].shape) - 1)
+            (2 * jax.random.uniform(key_5, shape=feet_pos[..., 0].shape) - 1)
             * config.obs_noise.scale.feet_pos[0]
         )
 
     noisy_feet_pos = noisy_feet_pos \
         .at[..., 1] \
         .add(
-            (2 * jax.random.uniform(key_4, shape=feet_pos[..., 1].shape) - 1)
+            (2 * jax.random.uniform(key_5, shape=feet_pos[..., 1].shape) - 1)
             * config.obs_noise.scale.feet_pos[1]
         )
 
     noisy_feet_pos = noisy_feet_pos \
         .at[..., 2]  \
         .add(
-            (2 * jax.random.uniform(key_4, shape=feet_pos[..., 2].shape) - 1)
+            (2 * jax.random.uniform(key_5, shape=feet_pos[..., 2].shape) - 1)
             * config.obs_noise.scale.feet_pos[2]
         )
 
@@ -266,6 +273,7 @@ def _read_sensors(
     return (
         _SensorReadout(
             accelerometer,
+            noisy_accelerometer,
             local_linvel,
             global_linvel,
             global_angvel,
@@ -289,7 +297,9 @@ def feature_extractor(
     mj_model: MjModel,
     mjx_model: mjx.Model
 ) -> FeatureExtractor[mjx.Data, Features]:
-    default_pose = mj_model.keyframe("home").qpos[7:]
+    default_pose_ctrl = mj_model.keyframe("home").ctrl
+    default_pose_qpos = mj_model.keyframe("home").qpos[7:]
+    actuator_gears = mj_model.actuator_gear[:, 0]
     lower_control_limits = mj_model.actuator_ctrlrange[:, 0]
     upper_control_limits = mj_model.actuator_ctrlrange[:, 1]
     body_id = mj_model.body(config.geometry.body).id
@@ -307,8 +317,8 @@ def feature_extractor(
         body_force = data.xfrc_applied[body_id, :3]
         actuator_force = data.actuator_force
         joint_qvel = data.qvel[6:]
-        joint_angle_deltas = readout.joint_angles - default_pose
-        noisy_joint_angle_deltas = readout.noisy_joint_angles - default_pose
+        joint_angle_deltas = readout.joint_angles - default_pose_qpos
+        noisy_joint_angle_deltas = readout.noisy_joint_angles - default_pose_qpos
         body_z = data.qpos[2]
         feet_z = data.site_xpos[feet_site_ids][..., -1]
         knee_height = data.xpos[knee_body_ids, 2]
@@ -330,6 +340,7 @@ def feature_extractor(
                 swing_peak=jp.zeros(4),
 
                 accelerometer=readout.accelerometer,
+                noisy_accelerometer=readout.noisy_accelerometer,
                 local_linvel=readout.local_linvel,
                 global_linvel=readout.global_linvel,
                 global_angvel=readout.global_angvel,
@@ -366,7 +377,7 @@ def feature_extractor(
         action: Array,
         rng: Rng
     ) -> tuple[Features, Done, Rng]:
-        motor_targets = default_pose + jp.array([0.8, 1.5, 2.8] * 4) * action
+        motor_targets = default_pose_ctrl + jp.array([0.8, 1.25, 2.48] * 4) * action
         motor_targets = jp.clip(
             motor_targets,
             lower_control_limits,
@@ -396,7 +407,7 @@ def feature_extractor(
         qpos_error_history = (
             jp.roll(previous.qpos_error_history, mjx_model.nu)
                 .at[:mjx_model.nu]
-                .set(readout.noisy_joint_angles - motor_targets)
+                .set(readout.noisy_joint_angles - motor_targets / actuator_gears)
         )
 
         steps_since_last_command = previous.steps_since_last_command + 1
@@ -419,8 +430,8 @@ def feature_extractor(
         body_force = data.xfrc_applied[body_id, :3]
         actuator_force = data.actuator_force
         joint_qvel = data.qvel[6:]
-        joint_angle_deltas = readout.joint_angles - default_pose
-        noisy_joint_angle_deltas = readout.noisy_joint_angles - default_pose
+        joint_angle_deltas = readout.joint_angles - default_pose_qpos
+        noisy_joint_angle_deltas = readout.noisy_joint_angles - default_pose_qpos
 
         done = jp.where(
             config.early_termination,
@@ -443,6 +454,7 @@ def feature_extractor(
                 swing_peak=swing_peak,
 
                 accelerometer=readout.accelerometer,
+                noisy_accelerometer=readout.noisy_accelerometer,
                 local_linvel=readout.local_linvel,
                 global_linvel=readout.global_linvel,
                 global_angvel=readout.global_angvel,
@@ -479,10 +491,9 @@ def feature_extractor(
 def observe(features: Features, _: Done) -> dict[str, Array]:
     policy = jp.hstack([
         features.noisy_gyro,
-        features.noisy_gravity,
+        features.noisy_accelerometer,
         features.noisy_joint_angle_deltas,
         features.qpos_error_history,
-        features.noisy_feet_pos,
         features.action_history,
         features.current_command
     ])
@@ -492,8 +503,8 @@ def observe(features: Features, _: Done) -> dict[str, Array]:
         "value": jp.hstack([
             policy,
             features.gyro,
-            features.accelerometer,
             features.gravity,
+            features.accelerometer,
             features.local_linvel,
             features.global_angvel,
             features.joint_angle_deltas,
@@ -536,7 +547,7 @@ def reward(config: Config) -> Reward[Features]:
             norm = jp.linalg.norm(features.previous_command)
             weights = jp.where(
                 norm < 0.1,
-                jp.array([1.0, 0.1, 0.1] * 4),
+                jp.array([1.0, 0.5, 0.5] * 4),
                 jp.array([1.0, 0.0, 0.0] * 4)
             )
 
@@ -601,9 +612,9 @@ def reward(config: Config) -> Reward[Features]:
 
         def symmetry():
             q = features.joint_angles.reshape(4, 3)
-            fl, fr, hl, hr = q[0], q[1], q[2], q[3]
-            front = jp.square(fl[0] + fr[0]) + jp.sum(jp.square(fl[1:] - fr[1:]))
-            hind = jp.square(hl[0] + hr[0]) + jp.sum(jp.square(hl[1:] - hr[1:]))
+            fl, rl, fr, rr = q[0], q[1], q[2], q[3]
+            front = jp.sum(jp.square(fl + fr))
+            hind = jp.sum(jp.square(rl + rr))
             return front + hind
 
         terms = {

@@ -33,6 +33,7 @@ def make_data(
     model: MjModel,
     qpos: Optional[Array] = None,
     qvel: Optional[Array] = None,
+    ctrl: Optional[Array] = None,
     impl: Optional[str] = None,
     nconmax: Optional[int] = None,
     njmax: Optional[int] = None,
@@ -51,5 +52,8 @@ def make_data(
 
   if qvel is not None:
     data = data.replace(qvel=qvel)
+
+  if ctrl is not None:
+    data = data.replace(ctrl=ctrl)
 
   return data

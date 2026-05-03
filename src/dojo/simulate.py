@@ -11,13 +11,14 @@ import matplotlib.pyplot as plt
 import mujoco
 import mujoco.viewer
 import numpy as np
+from pynput import keyboard
 
 from brax.training.agents.ppo import networks as ppo_networks
 from brax.training.agents.ppo import train as ppo
 from mujoco import MjModel
 
 from .brax import Environment, wrap
-from .quadruped.sit import (
+from .quadruped.sit_prm import (
     Config as EnvironmentConfig,
     feature_extractor,
     observe,
@@ -27,12 +28,31 @@ from .quadruped.sit import (
 from .training import Config as TrainingConfig
 
 
-COMMAND = jp.array([1.0])
+_keys_held: set = set()
+_command_value: float = 0.0
+
+
+def _on_press(key):
+    _keys_held.add(key)
+
+
+def _on_release(key):
+    _keys_held.discard(key)
+
+
+def _step_command() -> jp.ndarray:
+    global _command_value
+    if keyboard.Key.down in _keys_held:
+        _command_value = min(_command_value + 0.1, 0.9)
+    else:
+        _command_value = max(_command_value - 0.1, 0.0)
+    return jp.array([_command_value])
 
 
 def main():
     mj_model_path = Path("./scene.xml")
     mj_model = MjModel.from_xml_path(str(mj_model_path))
+    #mj_model.opt.gravity[:] = 0
     mj_data = mujoco.MjData(mj_model)
 
     environment_config = EnvironmentConfig()
@@ -86,38 +106,48 @@ def main():
     rng = jax.random.PRNGKey(0)
     rng, reset_key = jax.random.split(rng)
     state = environment.reset(reset_key)
-    state = inject_command(state, COMMAND)
+    state = inject_command(state, _step_command())
 
     print("Warming up JIT...")
     rng, warmup_key = jax.random.split(rng)
+
+
+    action, _ = inference_fn({"policy": jp.zeros(91), "value": jp.zeros(177)}, jp.zeros(()))
+    print(action)
+
     action, _ = inference_fn(state.obs, warmup_key)
     state = step_fn(state, action)
-    state = inject_command(state, COMMAND)
+    state = inject_command(state, _step_command())
     jax.block_until_ready(state)
     print("Ready.")
+    print("Hold ARROW DOWN to sit (increments by 0.1/step). Release to return to idle.")
 
     step_count = 0
-    with mujoco.viewer.launch_passive(mj_model, mj_data) as viewer:
-        while viewer.is_running():
-            rng, step_key = jax.random.split(rng)
-            action, _ = inference_fn(state.obs, step_key)
-            if step_count % 50 == 0:
-                a = np.array(action)
-                print(f"action min={a.min():.3f} max={a.max():.3f}")
-            step_count += 1
-            state = step_fn(state, action)
-            state = inject_command(state, COMMAND)
+    with keyboard.Listener(on_press=_on_press, on_release=_on_release):
+        with mujoco.viewer.launch_passive(mj_model, mj_data) as viewer:
+            while viewer.is_running():
+                rng, step_key = jax.random.split(rng)
+                action, _ = inference_fn(state.obs, step_key)
+                if step_count % 10 == 0:
+                    a = np.array(action)
+                    upvec = np.array(state.info["features"].gravity)
+                    deltas = np.array(state.info["features"].joint_angle_deltas)
+                    linvel_z = float(state.info["features"].global_linvel[2])
+                    print(f"action min={a.min():.3f} max={a.max():.3f} | upvector={upvec} | joint_deltas={np.round(deltas, 3)} | linvel_z={linvel_z:.4f}")
+                step_count += 1
+                state = step_fn(state, action)
+                state = inject_command(state, _step_command())
 
-            if state.done:
-                rng, reset_key = jax.random.split(rng)
-                state = environment.reset(reset_key)
-                state = inject_command(state, COMMAND)
+                if state.done:
+                    rng, reset_key = jax.random.split(rng)
+                    state = environment.reset(reset_key)
+                    state = inject_command(state, _step_command())
 
-            mj_data.qpos[:] = state.data.qpos
-            mj_data.qvel[:] = state.data.qvel
-            mujoco.mj_forward(mj_model, mj_data)
-            viewer.sync()
-            time.sleep(environment_config.ctrl_dt)
+                mj_data.qpos[:] = state.data.qpos
+                mj_data.qvel[:] = state.data.qvel
+                mujoco.mj_forward(mj_model, mj_data)
+                viewer.sync()
+                time.sleep(environment_config.ctrl_dt)
 
 
 if __name__ == "__main__":

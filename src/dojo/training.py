@@ -6,15 +6,16 @@ from collections import defaultdict
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
+import jax
 import matplotlib.pyplot as plt
 
 from brax.training.agents.ppo import networks as ppo_networks
 from brax.training.agents.ppo import train as ppo
-from mujoco import MjModel
+from mujoco import MjModel, mjx
 
 from .brax import Environment, wrap
 from .utility.dataclasses import default_field
-from .quadruped.sit import (
+from .quadruped.sit_prm import (
     Config as EnvironmentConfig,
     feature_extractor,
     observe,
@@ -66,9 +67,54 @@ class Config:
     num_resets_per_eval: int = 10
     num_eval_envs: int = 128
     full_reset: bool = True
-    randomization_fn: None = None
     network_factory: NetworkFactory = default_field(NetworkFactory())
 
+
+TORSO_BODY_ID = 1
+
+
+def domain_randomize(model: mjx.Model, rng: jax.Array):
+    @jax.vmap
+    def rand_dynamics(rng):
+        rng, key = jax.random.split(rng)
+        kp = model.actuator_gainprm[:, 0] * jax.random.uniform(
+            key, (model.nu,), minval=0.8, maxval=1.2
+        )
+        actuator_gainprm = model.actuator_gainprm.at[:, 0].set(kp)
+        actuator_biasprm = model.actuator_biasprm.at[:, 1].set(-kp)
+
+        rng, key = jax.random.split(rng)
+        kd = model.dof_damping[6:] * jax.random.uniform(
+            key, (model.nu,), minval=0.8, maxval=1.2
+        )
+        dof_damping = model.dof_damping.at[6:].set(kd)
+
+        rng, key = jax.random.split(rng)
+        torso_mass = model.body_mass[TORSO_BODY_ID] * jax.random.uniform(
+            key, minval=0.5, maxval=1.5
+        )
+        body_mass = model.body_mass.at[TORSO_BODY_ID].set(torso_mass)
+
+        return actuator_gainprm, actuator_biasprm, dof_damping, body_mass
+
+    actuator_gainprm, actuator_biasprm, dof_damping, body_mass = rand_dynamics(rng)
+
+    in_axes = jax.tree_util.tree_map(lambda x: None, model)
+    in_axes = in_axes.tree_replace({
+        "actuator_gainprm": 0,
+        "actuator_biasprm": 0,
+        "dof_damping": 0,
+        "body_mass": 0,
+    })
+
+    model = model.tree_replace({
+        "actuator_gainprm": actuator_gainprm,
+        "actuator_biasprm": actuator_biasprm,
+        "dof_damping": dof_damping,
+        "body_mass": body_mass,
+    })
+
+    return model, in_axes
 
 def main():
     history = defaultdict(list)
@@ -96,7 +142,9 @@ def main():
         plt.savefig("rewards.png", dpi=100)
 
     mj_model_path = Path("./scene.xml")
-    mj_model = MjModel.from_xml_string(mj_model_path.read_text())
+    mj_model = MjModel.from_xml_string(
+        mj_model_path.read_text()
+    )
     
     environment_config = EnvironmentConfig()
     environment = Environment(
@@ -125,7 +173,6 @@ def main():
     del training_config["num_eval_envs"]
     del training_config["network_factory"]
     del training_config["full_reset"]
-    del training_config["randomization_fn"]
 
     train = functools.partial(
         ppo.train,
@@ -134,6 +181,7 @@ def main():
         seed=1,
         save_checkpoint_path=str(Path("./checkpoints").resolve()),
         wrap_env_fn=functools.partial(wrap, full_reset=full_reset),
+        randomization_fn=domain_randomize,
         num_eval_envs=num_eval_envs
     )
 
