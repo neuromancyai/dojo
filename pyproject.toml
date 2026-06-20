@@ -3,19 +3,34 @@ name = "dojo"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.13"
 dependencies = [
     "brax>=0.14.2",
+    "cython>=3.2.4",
     "flax>=0.12.5",
-    "jax[cuda13]>=0.9.1",
+    "imageio[ffmpeg]>=2.37.3",
+    "jax[cuda12]>=0.9.2",
     "jaxtyping>=0.3.9",
+    "matplotlib>=3.10.8",
     "mujoco>=3.5.0",
     "mujoco-mjx>=3.5.0",
     "mujoco-warp",
+    "numpy>=2.4.4",
+    "opencv-python>=4.13.0.92",
+    "pynput>=1.7",
+    "pyopengl>=3.1.10",
+    "requests>=2.33.1",
+    "warp-lang>=1.12,<1.13",
 ]
 
 [tool.uv.sources]
-mujoco-warp = { git = "https://github.com/google-deepmind/mujoco_warp.git" }
+brax = { git = "https://github.com/google/brax.git", rev = "06e7c052e68ff354f8d817675ae318ed3932a0c8" }
+mujoco-warp = { git = "https://github.com/google-deepmind/mujoco_warp.git", rev = "79c37d3" }
+mujoco = { url = "https://py.mujoco.org/mujoco/mujoco-3.8.1.dev906351914-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" }
+
+[[tool.uv.index]]
+name = "mujoco-nightly"
+url = "https://py.mujoco.org/"
 
 
 [build-system]

@@ -35,31 +35,26 @@ class Config:
 
         @dataclass
         class Scale:
-            tracking_z: float = 2.0
-            tracking_linvel_z: float = -1.0
-            linvel_z_limit: float = -0.0
+            contact: float = 0.0
+            upright: float = 1.0
+            body_z: float = 2.0
             linvel: float = -1.0
-            angvel: float = -0.5
-            orientation: float = -5.0
-            posture: float = -1.0
-            stand_still: float = -0.0
-            termination: float = -1.0
-            torques: float = -0.002
-            torque_symmetry: float = 0.0
-            action_rate: float = -0.01
-            energy: float = -0.000
-            feet_slip: float = -0.1
-            knee_height: float = -1.0
-            feet_deviation: float = -1.0
-            symmetry: float = -1.0
-            feet_air_time: float = -0.1
-            torque_rate: float = -0.0005
+            angvel: float = -0.0
+            orientation: float = -0.0
+            posture: float = -0.0
+            torques: float = 0.0
+            action_rate: float = -0.001
+            energy: float = 0.0
+            feet_slip: float = 0.0
+            knee_height: float = 0.0
+            feet_deviation: float = 0.0
+            symmetry: float = -0.0
+            feet_air_time: float = 0.2
+            torque_rate: float = 0.0
             joint_qvel_rate: float = 0.0
 
         scale: Scale = default_field(Scale())
-        tracking_sigma: float = 0.0001#0.0001
-        linvel_sigma: float = .006
-        linvel_z_ref: float = 0.1
+        tracking_sigma: float = 0.025
         max_foot_height: float = 0.12
 
     @dataclass
@@ -97,11 +92,11 @@ class Config:
             "rl_global_linvel",
             "rr_global_linvel"
         )
-    
+
     @dataclass
     class Geometry:
         body: str = "root"
-        z_range: tuple[float, float] = (0.100, 0.215)
+        z_range: tuple[float, float] = (0.115, 0.292)
         knees: tuple[str, str, str, str] = (
             "lower_leg_part_1",
             "lower_leg_part_2",
@@ -111,12 +106,8 @@ class Config:
         knee_min_height: float = 0.05
 
     ctrl_dt: float = 0.02
-    sim_dt: float = 0.004
-    trajectory_z_speed: float = 0.1
-    min_command_horizon_steps: int = 10
-    max_command_horizon_steps: int = 100
+    sim_dt: float = 0.001
     episode_length: float = 1000
-    early_termination: bool = True
     action_repeat: int = 1
     action_scale: float = 0.3
     history_len: int = 3
@@ -159,12 +150,6 @@ class Features:
     foot_linvel: Float[Array, "12"]
 
     body_z: Float[Array, ""]
-    previous_body_z: Float[Array, ""]
-    body_z_ref: Float[Array, ""]
-    body_linvel_z_ref: Float[Array, ""]
-    trajectory_phase: Float[Array, ""]
-    trajectory_blend: Float[Array, ""]
-    trajectory_horizon_steps: Int[Array, ""]
     feet_z: Float[Array, "4"]
     knee_height: Float[Array, "4"]
     home_feet_pos: Float[Array, "12"]
@@ -179,36 +164,7 @@ class Features:
 
 
 def _sample_command(rng: Rng) -> tuple[Array, Rng]:
-    rng, key_1, key_2 = jax.random.split(rng, 3)
-
-    u = jax.random.uniform(key_1)
-    continuous = jax.random.uniform(key_2)
-
-    command = jp.where(
-        u < 0.4,
-        jp.zeros(1),
-        jp.array([continuous])
-    )
-
-    return command, rng
-
-
-def _cosine_blend(s: Array) -> Array:
-    return 0.5 - 0.5 * jp.cos(jp.pi * s)
-
-
-def _cosine_blend_derivative(s: Array) -> Array:
-    return 0.5 * jp.pi * jp.sin(jp.pi * s)
-
-
-def reference_horizon_steps(config: Config, z_delta: Array) -> Array:
-    duration = z_delta / max(config.trajectory_z_speed, 1e-6)
-    steps = jp.ceil(duration / config.ctrl_dt).astype(jp.int32)
-    return jp.clip(
-        steps,
-        config.min_command_horizon_steps,
-        config.max_command_horizon_steps
-    )
+    return jp.zeros(1), rng
 
 
 class _SensorReadout(NamedTuple):
@@ -355,15 +311,6 @@ def feature_extractor(
         body_z = data.qpos[2]
         feet_z = data.site_xpos[feet_site_ids][..., -1]
         knee_height = data.xpos[knee_body_ids, 2]
-        z_range = config.geometry.z_range
-        initial_target_body_z = (
-            previous_command[0] * (z_range[0] - z_range[1])
-            + z_range[1]
-        )
-        initial_horizon_steps = reference_horizon_steps(
-            config,
-            jp.abs(initial_target_body_z - body_z)
-        )
 
         done = jp.zeros((), dtype=jp.bool_)
 
@@ -398,12 +345,6 @@ def feature_extractor(
                 foot_linvel=readout.foot_linvel,
 
                 body_z=body_z,
-                previous_body_z=body_z,
-                body_z_ref=body_z,
-                body_linvel_z_ref=jp.zeros(()),
-                trajectory_phase=jp.zeros(()),
-                trajectory_blend=jp.zeros(()),
-                trajectory_horizon_steps=initial_horizon_steps,
                 feet_z=feet_z,
                 knee_height=knee_height,
                 home_feet_pos=readout.feet_pos,
@@ -425,19 +366,7 @@ def feature_extractor(
         action: Array,
         rng: Rng
     ) -> tuple[Features, Done, Rng]:
-        action_range_low = jp.array([-0.8, -1.0, -1.8] * 4)
-        action_range_high = jp.array([0.8, 0.75, 1.2] * 4)
-        action_direction = jp.array([
-            1, 1, 1,
-            1, 1, 1,
-            -1, -1, -1,
-            -1, -1, -1
-        ])
-
-        action_ = ((action_range_high - action_range_low) / 2) * action + (action_range_low + action_range_high) / 2
-        action_ = action_ * action_direction
-
-        motor_targets = default_pose_ctrl + action_
+        motor_targets = default_pose_ctrl + jp.array([0.8, 1.25, 2.48] * 4) * action
         motor_targets = jp.clip(
             motor_targets,
             lower_control_limits,
@@ -461,70 +390,31 @@ def feature_extractor(
         action_history = (
             jp.roll(previous.action_history, mjx_model.nu)
                 .at[:mjx_model.nu]
-                .set(action_)
+                .set(action)
         )
 
         qpos_error_history = (
             jp.roll(previous.qpos_error_history, mjx_model.nu)
                 .at[:mjx_model.nu]
-                #.set(jp.zeros(mjx_model.nu))
-                .set(readout.noisy_joint_angles * actuator_gears - motor_targets)
+                .set(readout.noisy_joint_angles - motor_targets / actuator_gears)
         )
 
         steps_since_last_command = previous.steps_since_last_command + 1
         new_command, rng = _sample_command(rng)
-        command_changed = (
-            steps_since_last_command > previous.trajectory_horizon_steps
-        )
         previous_command = previous.current_command
         current_command = jp.where(
-            command_changed,
+            steps_since_last_command > 200,
             new_command,
             previous.current_command
         )
 
         steps_since_last_command = jp.where(
-            command_changed,
+            steps_since_last_command > 200,
             jp.int32(0),
             steps_since_last_command
         )
 
         body_z = data.qpos[2]
-        trajectory_start_z = jp.where(
-            command_changed,
-            previous.body_z_ref,
-            previous.previous_body_z
-        )
-        z_range = config.geometry.z_range
-        target_body_z = (
-            current_command[0] * (z_range[0] - z_range[1])
-            + z_range[1]
-        )
-        trajectory_horizon_steps = jp.where(
-            command_changed,
-            reference_horizon_steps(
-                config,
-                jp.abs(target_body_z - trajectory_start_z)
-            ),
-            previous.trajectory_horizon_steps
-        )
-        trajectory_phase = jp.clip(
-            steps_since_last_command.astype(jp.float32) /
-            trajectory_horizon_steps.astype(jp.float32),
-            0.0,
-            1.0
-        )
-        trajectory_blend = _cosine_blend(trajectory_phase)
-        trajectory_blend_derivative = _cosine_blend_derivative(
-            trajectory_phase
-        )
-        body_z_ref_delta = target_body_z - trajectory_start_z
-        body_z_ref = trajectory_start_z + body_z_ref_delta * trajectory_blend
-        body_linvel_z_ref = (
-            body_z_ref_delta *
-            trajectory_blend_derivative /
-            (trajectory_horizon_steps.astype(jp.float32) * config.ctrl_dt)
-        )
         knee_height = data.xpos[knee_body_ids, 2]
         body_force = data.xfrc_applied[body_id, :3]
         actuator_force = data.actuator_force
@@ -532,11 +422,7 @@ def feature_extractor(
         joint_angle_deltas = readout.joint_angles - default_pose_qpos
         noisy_joint_angle_deltas = readout.noisy_joint_angles - default_pose_qpos
 
-        done = jp.where(
-            config.early_termination,
-            readout.gravity[-1] < 0.85,
-            jp.zeros((), dtype=jp.bool_)
-        )
+        done = jp.zeros((), dtype=jp.bool_)
 
         return (
             Features(
@@ -569,12 +455,6 @@ def feature_extractor(
                 foot_linvel=readout.foot_linvel,
 
                 body_z=body_z,
-                previous_body_z=trajectory_start_z,
-                body_z_ref=body_z_ref,
-                body_linvel_z_ref=body_linvel_z_ref,
-                trajectory_phase=trajectory_phase,
-                trajectory_blend=trajectory_blend,
-                trajectory_horizon_steps=trajectory_horizon_steps,
                 feet_z=feet_z_positions,
                 knee_height=knee_height,
                 home_feet_pos=previous.home_feet_pos,
@@ -594,10 +474,6 @@ def feature_extractor(
 
 
 def observe(features: Features, _: Done) -> dict[str, Array]:
-    body_z_ref_error = jp.array([features.body_z_ref - features.body_z])
-    body_linvel_z_ref = jp.array([features.body_linvel_z_ref])
-    trajectory_phase = jp.array([features.trajectory_phase])
-    trajectory_blend = jp.array([features.trajectory_blend])
     policy = jp.hstack([
         features.noisy_gyro,
         features.noisy_accelerometer,
@@ -623,26 +499,26 @@ def observe(features: Features, _: Done) -> dict[str, Array]:
             features.feet_contacts.astype(jp.float32),
             features.foot_linvel,
             features.feet_air_time,
-            features.body_force,
-            body_z_ref_error,
-            body_linvel_z_ref
+            features.body_force
         ])
     }
 
 
 def reward(config: Config) -> Reward[Features]:
     def call(features: Features, done: Done) -> dict[str, Array]:
-        def tracking_z():
-            sigma = config.reward.tracking_sigma
-            body_z = features.body_z
+        # feet_contacts order: fl(0), fr(1), rl(2), rr(3)
+        def upright():
+            # gravity[0] = 0 when flat, 1 when body fully pitched forward (perpendicular to ground)
+            return features.gravity[0]
 
-            error = jp.square(features.body_z_ref - body_z)
-            return jp.exp(-error / sigma)
+        def body_z():
+            return features.body_z
 
-        def tracking_linvel_z():
-            d = features.global_linvel[2] - features.body_linvel_z_ref
-
-            return jp.square(d) + jp.abs(d)
+        def contact():
+            contacts = features.feet_contacts.astype(jp.float32)
+            rear = jp.sum(contacts[2:])
+            front = jp.sum(contacts[:2])
+            return rear - front
 
         def linvel():
             weights = jp.array([1.0, 1.0, 0.0])
@@ -653,53 +529,24 @@ def reward(config: Config) -> Reward[Features]:
             return jp.sum(jp.square(features.global_angvel))
 
         def orientation():
-            tilt = features.gravity[:2]
-
-            return jp.sum(jp.square(tilt))
+            return jp.sum(jp.square(features.gravity[:2]))
 
         def posture():
-            z_range = config.geometry.z_range
-            command = features.previous_command[0]
-
-            target = command * (z_range[0] - z_range[1]) + z_range[1]
-            error = target - features.body_z
-            near_zero_command = jp.linalg.norm(features.previous_command) < 0.1
-            near_target = jp.abs(error) <= 0.01
-
+            norm = jp.linalg.norm(features.previous_command)
             weights = jp.where(
-                near_zero_command & near_target,
-                jp.array([1.0, 1.0, 1.0] * 4),
+                norm < 0.1,
+                jp.array([1.0, 0.5, 0.5] * 4),
                 jp.array([1.0, 0.0, 0.0] * 4)
             )
+
             d = features.joint_angle_deltas * weights
-            return jp.sum(jp.square(d))
-
-        def stand_still():
-            z_range = config.geometry.z_range
-            command = features.previous_command[0]
-
-            target = command * (z_range[0] - z_range[1]) + z_range[1]
-            error = target - features.body_z
-            near_zero_command = jp.linalg.norm(features.previous_command) < 0.1
-            near_target = jp.abs(error) <= 0.01
-            cost = jp.sum(jp.abs(features.joint_angle_deltas))
-            return cost * (near_zero_command & near_target)
-
-        def termination():
-            return done
+            return jp.sum(jp.square(d)) + jp.sum(jp.abs(d))
 
         def torques():
             return (
                 jp.sqrt(jp.sum(jp.square(features.actuator_force))) +
                 jp.sum(jp.abs(features.actuator_force))
             )
-
-        def torque_symmetry():
-            torque = jp.abs(features.actuator_force).reshape(4, 3)
-            fl, rl, fr, rr = torque[0], torque[1], torque[2], torque[3]
-            front = jp.sum(jp.square(fl - fr))
-            rear = jp.sum(jp.square(rl - rr))
-            return front + rear
 
         def action_rate():
             size = 12
@@ -729,15 +576,17 @@ def reward(config: Config) -> Reward[Features]:
             )
 
         def knee_height():
-            violation = features.knee_height < config.geometry.knee_min_height
-            return jp.sum(violation.astype(jp.float32))
+            return jp.sum(jp.minimum(features.knee_height - config.geometry.knee_min_height, 0.0))
 
         def feet_deviation():
             delta = (features.feet_pos - features.home_feet_pos).reshape(4, 3)
-            return jp.sum(jp.abs(delta[:, :2]))
+            return jp.sum(jp.square(delta[:, :2]))
 
         def feet_air_time():
-            return jp.sum((~features.feet_contacts).astype(jp.float32))
+            value = features.feet_air_time * ~features.feet_contacts
+            rear = jp.sqrt(jp.sum(jp.square(value[2:]))) + jp.sum(jp.abs(value[2:]))
+            front = jp.sqrt(jp.sum(jp.square(value[:2]))) + jp.sum(jp.abs(value[:2]))
+            return front - rear
 
         def torque_rate():
             return jp.sum(
@@ -747,22 +596,7 @@ def reward(config: Config) -> Reward[Features]:
         def joint_qvel_rate():
             return jp.sum(jp.square(features.joint_qvel - features.previous_joint_qvel))
 
-        def linvel_z_limit():
-            z_range = config.geometry.z_range
-            command = features.previous_command[0]
-            body_z = features.body_z
-
-            target = command * (z_range[0] - z_range[1]) + z_range[1]
-            error_norm = jp.abs((target - body_z) / (z_range[1] - z_range[0]))
-
-            target_vel = jp.where(error_norm > 0.01, 0.05, 0.0)
-            excess = jp.maximum(jp.abs(features.global_linvel[2]) - target_vel, 0.0)
-            return jp.exp(excess) - 1.0
-
         def symmetry():
-            # PRM joint order: FL, RL, FR, RR — each leg: [haa, hfe, kfe]
-            # Verified from simulation: at home pose fl+fr=[0,0,0] and rl+rr=[0,0,0]
-            # HFE and KFE axes are flipped for right legs, so all joints use mirror=+1
             q = features.joint_angles.reshape(4, 3)
             fl, rl, fr, rr = q[0], q[1], q[2], q[3]
             front = jp.sum(jp.square(fl + fr))
@@ -770,17 +604,14 @@ def reward(config: Config) -> Reward[Features]:
             return front + hind
 
         terms = {
-            "tracking_z": tracking_z(),
-            "tracking_linvel_z": tracking_linvel_z(),
-            "linvel_z_limit": linvel_z_limit(),
+            "contact": contact(),
+            "upright": upright(),
+            "body_z": body_z(),
             "linvel": linvel(),
             "angvel": angvel(),
             "orientation": orientation(),
             "posture": posture(),
-            "stand_still": stand_still(),
-            "termination": termination(),
             "torques": torques(),
-            "torque_symmetry": torque_symmetry(),
             "action_rate": action_rate(),
             "energy": energy(),
             "feet_slip": feet_slip(),

@@ -1,4 +1,5 @@
 
+import argparse
 import functools
 import os
 
@@ -14,13 +15,8 @@ from brax.training.agents.ppo import train as ppo
 from mujoco import MjModel, mjx
 
 from .brax import Environment, wrap
+from .perturbation import Config as PerturbationConfig, PerturbationWrapper
 from .utility.dataclasses import default_field
-from .quadruped.sit_prm import (
-    Config as EnvironmentConfig,
-    feature_extractor,
-    observe,
-    reward
-)
 
 
 os.environ["MUJOCO_GL"] = "egl"
@@ -91,13 +87,19 @@ def domain_randomize(model: mjx.Model, rng: jax.Array):
 
         rng, key = jax.random.split(rng)
         torso_mass = model.body_mass[TORSO_BODY_ID] * jax.random.uniform(
-            key, minval=0.5, maxval=1.5
+            key, minval=0.8, maxval=1.2
         )
         body_mass = model.body_mass.at[TORSO_BODY_ID].set(torso_mass)
 
-        return actuator_gainprm, actuator_biasprm, dof_damping, body_mass
+        rng, key = jax.random.split(rng)
+        floor_sliding = model.geom_friction[0, 0] * jax.random.uniform(
+            key, minval=0.8, maxval=1.2
+        )
+        geom_friction = model.geom_friction.at[0, 0].set(floor_sliding)
 
-    actuator_gainprm, actuator_biasprm, dof_damping, body_mass = rand_dynamics(rng)
+        return actuator_gainprm, actuator_biasprm, dof_damping, body_mass, geom_friction
+
+    actuator_gainprm, actuator_biasprm, dof_damping, body_mass, geom_friction = rand_dynamics(rng)
 
     in_axes = jax.tree_util.tree_map(lambda x: None, model)
     in_axes = in_axes.tree_replace({
@@ -105,6 +107,7 @@ def domain_randomize(model: mjx.Model, rng: jax.Array):
         "actuator_biasprm": 0,
         "dof_damping": 0,
         "body_mass": 0,
+        "geom_friction": 0,
     })
 
     model = model.tree_replace({
@@ -112,11 +115,41 @@ def domain_randomize(model: mjx.Model, rng: jax.Array):
         "actuator_biasprm": actuator_biasprm,
         "dof_damping": dof_damping,
         "body_mass": body_mass,
+        "geom_friction": geom_friction,
     })
 
     return model, in_axes
 
+_CURRICULA = ("stability", "sit", "hind_stand", "joystick")
+
+
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("curriculum", choices=_CURRICULA)
+    parser.add_argument("checkpoint", nargs="?", default=None)
+    args = parser.parse_args()
+
+    if args.curriculum == "stability":
+        from .quadruped.stability import (
+            Config as EnvironmentConfig,
+            feature_extractor, observe, reward
+        )
+    elif args.curriculum == "hind_stand":
+        from .quadruped.hind_stand import (
+            Config as EnvironmentConfig,
+            feature_extractor, observe, reward
+        )
+    elif args.curriculum == "joystick":
+        from .quadruped.joystick_prm import (
+            Config as EnvironmentConfig,
+            feature_extractor, observe, reward
+        )
+    else:
+        from .quadruped.sit_prm import (
+            Config as EnvironmentConfig,
+            feature_extractor, observe, reward
+        )
+
     history = defaultdict(list)
     steps_history = []
 
@@ -157,6 +190,16 @@ def main():
         nconmax=environment_config.nconmax,
         njmax=environment_config.njmax
     )
+    if args.curriculum not in ("hind_stand", "sit"):
+        perturbation_config = PerturbationConfig(
+            velocity_kick=(5.0, 20.0) if args.curriculum == "stability" else (5.0, 10.0)
+        )
+        environment = PerturbationWrapper(
+            environment,
+            mj_model,
+            perturbation_config,
+            ctrl_dt=environment_config.ctrl_dt
+        )
 
     training_config = Config()
 
@@ -180,6 +223,7 @@ def main():
         network_factory=network_factory,
         seed=1,
         save_checkpoint_path=str(Path("./checkpoints").resolve()),
+        restore_checkpoint_path=str(Path(args.checkpoint).resolve()) if args.checkpoint else None,
         wrap_env_fn=functools.partial(wrap, full_reset=full_reset),
         randomization_fn=domain_randomize,
         num_eval_envs=num_eval_envs

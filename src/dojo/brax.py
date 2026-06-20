@@ -109,7 +109,19 @@ class Environment[F]:
         lower_control_limits = self._mj_model.actuator_ctrlrange[:, 0]
         upper_control_limits = self._mj_model.actuator_ctrlrange[:, 1]
 
-        targets = default_pose_ctrl + jp.array([0.8, 1.25, 2.48] * 4) * action
+        action_range_low = jp.array([-0.8, -1.0, -1.8] * 4)
+        action_range_high = jp.array([0.8, 0.75, 1.2] * 4)
+        action_direction = jp.array([
+            1, 1, 1,
+            1, 1, 1,
+            -1, -1, -1,
+            -1, -1, -1
+        ])
+
+        action_ = ((action_range_high - action_range_low) / 2) * action + (action_range_low + action_range_high) / 2
+        action_ = action_ * action_direction
+
+        targets = default_pose_ctrl + action_
         targets = jp.clip(targets, lower_control_limits, upper_control_limits)
         # jax.debug.print("action:  {}", action)
         # jax.debug.print("targets: {}", targets)
